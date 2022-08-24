@@ -759,8 +759,10 @@ void generate_plot(int volts, double cutoff, int cores, int write_every, int k, 
 	    //if (s < 0) continue;
 
             // Remove electrons that have reached the anode
-            if (!uniform_field)
-                electron_list.erase(std::remove_if(electron_list.begin(), electron_list.end(), [](auto const& i){ return hit_check(i->position()); }), electron_list.end());
+            if (!uniform_field){
+	      electron_list.erase(std::remove_if(electron_list.begin(), electron_list.end(), [](decltype(*begin(electron_list)) ii){ return hit_check(ii->position()); }), electron_list.end());
+	      //electron_list.erase(std::remove_if(electron_list.begin(), electron_list.end(), [](auto const& i){ return hit_check(i->position()); }), electron_list.end());
+	    }
 
             // If all electrons have reached the anode, end the simulation
             if ((!uniform_field) && (electron_list.size() == 0))
