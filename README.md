@@ -23,7 +23,7 @@ make
 ```
 
 ### Setup
-To run the code type `./LArCADe` and follow the prompts. To change running configuration edit the `srcs/Constants.h` file and specifically update the value of `n`, the density of argon atoms, `is_diff` and `is_gas` to choose the simulation mode.
+To run the code type `./LArCADe` and follow the prompts. Typical values to use are V/cm of O(1-10^3), simulation duration of O(10^-9 to 10^-7) sec, and recording every 10^3-10^4 simulation steps. To change running configuration edit the `srcs/Constants.h` file and specifically update the value of `n`, the density of argon atoms, `is_diff` and `is_gas` to choose the simulation mode.
 
 Configurable constants:
 
