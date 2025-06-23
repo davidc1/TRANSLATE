@@ -34,6 +34,26 @@ int main()
       std::cin >> elec_energy;
     }
     
+
+    double angle;
+    std::cout << "Angle of ionization track with Electric field direction [Degrees]: ";
+    std::cin >> angle;
+    while (std::cin.fail()){
+        std::cin.clear();
+        std::cin.ignore();
+        std::cin >> angle;
+    }
+
+    double density;
+    std::cout << "Distance between ions [nm]: ";
+    std::cin >> density;
+    while (std::cin.fail()){
+        std::cin.clear();
+        std::cin.ignore();
+        std::cin >> density;
+    }
+
+
     double cutoff;
     std::cout << "Stop After (s): ";
     std::cin >> cutoff;
@@ -84,7 +104,7 @@ int main()
         ProgressBar bar(cores);
 
         for (int k = 0; k < cores; k++) {
-	  branches[k] = std::thread(generate_plot, int(volts_list[j]), elec_energy, cutoff, cores, write_every, k, batches, debug, status, std::ref(bar));   
+	  branches[k] = std::thread(generate_plot, int(volts_list[j]), elec_energy, angle, density, cutoff, cores, write_every, k, batches, debug, status, std::ref(bar));   
         }
     
         for (int k = 0; k < cores; k++) {

@@ -105,10 +105,13 @@ Vec random_velocity(std::mt19937& gen, bool electron=false) {
  * @param gen The random number generator to be used
  * @return The position vector (in m)
  */
+
+ /*
 Vec starting_pos(std::mt19937& gen) {
   
   if (uniform_field)
-    return Vec(0, 0, 0);
+    return Vec(0, 0, 0); 
+
   
   std::normal_distribution<double> dist(0.0, 1.0);
   std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -123,6 +126,60 @@ Vec starting_pos(std::mt19937& gen) {
   
   return Vec((z_max - z_min) * spawn_height_scale + z_min, random_disc.y, random_disc.z);
 }
+*/
+
+
+
+// Generate a random electron position around a randomly-chosen Argon ion
+// The Argon ions lie along a line tilted by `angle` in the x–z plane.
+Vec starting_pos(std::mt19937& gen,
+                 double angle,   // radians: 0 = +x axis, π/2 = +z axis
+                 double density) // r_k in nm
+{
+    // ------------- geometry constants ------------------------------------
+    const int    N        = 21;      // number of Argon ions
+    const double r_k      = density * 1e-9; // nm -> m
+    const double r_0      = 5e-10;   // sphere radius for electron (m)
+    double rad  = angle * M_PI / 180.0;          // deg → rad
+    double cosA = std::cos(rad);
+    double sinA = std::sin(rad);
+
+
+    // ------------- build the ion positions --------------------------------
+    std::vector<Vec> argonPositions;
+    argonPositions.reserve(N);
+
+    int halfN = N / 2;
+    for (int i = -halfN; i <= halfN; ++i) {
+        double s   = i * r_k;              // signed distance along ion line
+        double x_i =  s * cosA;            // project onto x
+        double z_i =  s * sinA;            // project onto z
+        argonPositions.emplace_back(x_i, 0.0, z_i);
+    }
+
+    // ------------- pick one ion at random ---------------------------------
+    std::uniform_int_distribution<int> pick(0,
+        static_cast<int>(argonPositions.size()) - 1);
+    Vec ionPos = argonPositions[pick(gen)];
+
+    // ------------- random point inside sphere of radius r_0 ---------------
+    std::uniform_real_distribution<double> U(0.0, 1.0);
+
+    double u  = U(gen);
+    double r  = r_0 * std::cbrt(u);              // radius ∝ u^{1/3}
+    double cz = 2.0 * U(gen) - 1.0;              // cosθ in [-1,1]
+    double sz = std::sqrt(1.0 - cz * cz);
+    double phi = 2.0 * M_PI * U(gen);
+
+    double dx = r * sz * std::cos(phi);
+    double dy = r * sz * std::sin(phi);
+    double dz = r * cz;
+
+    return ionPos + Vec(dx, dy, dz);
+}
+
+
+
 
 /*
  * Given a parallel coordinate to the tip array plane (y or z), this shifts it to 
@@ -289,7 +346,8 @@ int z_index(double z_val) {
 Vec accel_from_E(Vec pos, double volts) {
   
   Vec local = local_coords(pos);
-  
+
+
   double r_val;
   double z_val;
   
@@ -324,6 +382,94 @@ Vec accel_from_E(Vec pos, double volts) {
   return (volts / bulk_field) * (e / m_e) * e_field * 1e2;
 }
 
+
+
+/*
+ * Compute the net acceleration on an electron at position `pos`,
+ * from N=20 protons placed along the z-axis, each spaced by r_k.
+ *
+ * Return the acceleration (m/s^2).
+ */
+Vec accel_from_charge(Vec pos, double angle, double density) 
+{
+    static const double k_e = 8.9875517923e9; 
+    // Number of protons
+    const int N = 21;
+
+    // Spacing distance in nm => convert to meters
+    // e.g., if r_k=100 nm => 100e-9 m
+    double r_k_nm = density;            // nm
+    double r_k = r_k_nm * 1e-9;       // meters
+
+
+    double rad  = angle * M_PI / 180.0;          // deg → rad
+    double cosA = std::cos(rad);
+    double sinA = std::sin(rad);
+
+
+
+    // We'll place 20 protons centered on z=0:
+    // indices from -9..+10 so we get 20 total
+    // (If you'd rather do 0..19, that's fine too—just adjust as needed.)
+
+    // Net electric field (vector sum)
+    Vec E_net(0.0, 0.0, 0.0);
+
+    for (int i = 0; i < N; i++) {
+        // For symmetrical distribution about 0, let i run from -9..+10
+        // but be mindful that -9..+10 is 20 steps if i= -9..10 inclusive.
+        // We'll do iOffset = i - (N/2 - 1) so that iOffset runs from -9..10
+        int iOffset = i - (N/2 - 1);
+
+        // Position of the i-th proton on the z-axis
+        double s_proton = iOffset * r_k;
+        Vec protonPos(s_proton * cosA, 0.0, s_proton * sinA);
+
+        // Vector from proton to electron
+        Vec r_vec = pos - protonPos;
+        double dist = norm(r_vec);
+
+        // Avoid division by zero if the electron is exactly at a proton's location
+        if (dist < 1e-15) {
+            // If you'd prefer to handle a collision or skip it, do so here
+            continue;
+        }
+
+        // Unit vector from proton -> electron
+        Vec r_hat = r_vec / dist;
+
+        // Proton charge = +e
+        // E = k_e * (q_p) / r^2  * (r_hat)
+        // dist^2 in denominator
+        Vec E_contrib = (k_e * e / (dist * dist)) * r_hat;
+
+        // Sum into net field
+        E_net += E_contrib;
+    }
+
+    // The electron has charge = -e, so force = q_e * E_net = (-e) * E_net
+    // But typically we do acceleration = (q_e/m_e)*E_net.
+    // If q_e = -e, this automatically flips direction, but let's keep it explicit.
+    double q_e = -e;
+    Vec acceleration = (q_e / m_e) * E_net;
+
+    return acceleration; 
+}
+
+
+Vec total_accel(Vec pos, double volts, double angle, double density) {
+  // Acceleration due to the external non-uniform electric field, using the x-component of the position
+  Vec accel_ext = accel_from_E(Vec(pos.x, 0, 0), volts);
+
+  // Acceleration due to the electric field from the line charge distribution
+  Vec accel_charge = accel_from_charge(pos, angle, density);
+
+  // Calculate the total acceleration as the vector sum of both contributions
+  Vec total_acceleration = accel_ext + accel_charge;
+
+  return total_acceleration; // In m/s^2
+}
+
 /*
  * The constructor for the electron class. Sets up the basic initial conditions.
  * 
@@ -333,11 +479,11 @@ Vec accel_from_E(Vec pos, double volts) {
  * @param velocity The initial velocity vector (in m)
  * @param gen The random number generator to be used
  */
-Electron::Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status):
+Electron::Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status, double angle, double density):
   _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _volts_per_cm(volts), _total_time(initial_time), generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
   
   if (!uniform_field)
-    _accel = accel_from_E(_x, _volts_per_cm);
+    _accel = total_accel(position, _volts_per_cm, angle, density);
   
   _energy = J_to_eV(0.5 * m_e * dot(_v, _v));
   
@@ -464,7 +610,7 @@ void Electron::ionization(std::vector<Electron*> &electron_list, int& total_ioni
   if (track_child_ions) {
     std::uniform_real_distribution<double> rand_eV(1.0, 5.0);
     Vec near_therm_vel = random_unit_vector(generator) * eV_to_v(rand_eV(generator));
-    electron_list.push_back(new Electron(_total_time, _volts_per_cm, _x, near_therm_vel, generator, _debug, _status));
+    electron_list.push_back(new Electron(_total_time, _volts_per_cm, _x, near_therm_vel, generator, _debug, _status, _angle_param, _density_param));
   }
   
   remove_energy(15.76);
@@ -900,7 +1046,7 @@ void Electron::update(std::vector<Electron*> &electron_list, int& total_ionizati
  * @param batches The number of batches to be generated
  * @param bar The progress bar to be used
  */
-void generate_plot(int volts, double elec_energy, double cutoff, int cores, int write_every, int k, int batches, int debug, int status, ProgressBar& bar) {
+void generate_plot(int volts, double elec_energy, double angle, double density, double cutoff, int cores, int write_every, int k, int batches, int debug, int status, ProgressBar& bar) {
   
   for (int i = 0; i < batches; i++) {
     
@@ -911,7 +1057,7 @@ void generate_plot(int volts, double elec_energy, double cutoff, int cores, int 
     // Setup the array of electrons to be simulated
     std::vector<Electron*> electron_list;
     // simulate electron
-    electron_list.push_back(new Electron(0, volts, starting_pos(generator), random_unit_vector(generator) * eV_to_v(elec_energy), generator, debug, status));
+    electron_list.push_back(new Electron(0, volts, starting_pos(generator, angle, density), random_unit_vector(generator) * eV_to_v(elec_energy), generator, debug, status, angle, density));
     
     // Open the file to write to
     std::ofstream file("../py/simulation-runs/"
@@ -979,7 +1125,7 @@ void generate_plot(int volts, double elec_energy, double cutoff, int cores, int 
 	
 	
 	// Write the primary electron's information to a file (if using the full ionization algorithm, this may cause only the time and total ionizations to be accurate)
-	file << t * 1e9 << "," << dt * 1e9 << ", " << x * 1e6 << "," << y * 1e6 << "," << z * 1e6 << "," << ke << ","
+	file << t * 1e9 << "," << x * 1e6 << "," << y * 1e6 << "," << z * 1e6 << "," << ke << ","
 	     << vd << ","<< s << "," << dist << "," << interactions << ","
 	     << total_ionizations;
 	if (track_child_ions == true) file << "," << el;

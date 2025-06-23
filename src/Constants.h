@@ -22,7 +22,7 @@ const double lambda = n * K_max;                // Inverse mean of the exponenti
 const double beta = 1 / lambda;                 // Mean of the exponential distribution for drawing timesteps
 
 // Editable parameters
-const bool is_diff = true;                      // Use differential cross-sections?
+const bool is_diff = false;                      // Use differential cross-sections?
 const bool is_gas = false;                       // Is this in gas? Or liquid? Make sure to update the number density
 const bool track_child_ions = false;            // Keep track of child electrons and their ionizations? Or only ionizations of the main, simulated electron?
 const bool uniform_field = true;                // Is this in a uniform field? Or are we simulating a tip / tip array?
