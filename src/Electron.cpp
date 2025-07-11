@@ -134,10 +134,10 @@ Vec starting_pos(std::mt19937& gen) {
 // The Argon ions lie along a line tilted by `angle` in the x–z plane.
 Vec starting_pos(std::mt19937& gen,
                  double angle,   // radians: 0 = +x axis, π/2 = +z axis
-                 double density) // r_k in nm
+                 double density, int batches) // r_k in nm
 {
     // ------------- geometry constants ------------------------------------
-    const int    N        = 21;      // number of Argon ions
+    const int    N        =  batches;      // number of Argon ions
     const double r_k      = density * 1e-9; // nm -> m
     const double r_0      = 5e-10;   // sphere radius for electron (m)
     double rad  = angle * M_PI / 180.0;          // deg → rad
@@ -390,11 +390,11 @@ Vec accel_from_E(Vec pos, double volts) {
  *
  * Return the acceleration (m/s^2).
  */
-Vec accel_from_charge(Vec pos, double angle, double density) 
+Vec accel_from_charge(Vec pos, double angle, double density, int batches) 
 {
     static const double k_e = 8.9875517923e9; 
     // Number of protons
-    const int N = 21;
+    const int N = batches;
 
     // Spacing distance in nm => convert to meters
     // e.g., if r_k=100 nm => 100e-9 m
@@ -457,12 +457,12 @@ Vec accel_from_charge(Vec pos, double angle, double density)
 }
 
 
-Vec total_accel(Vec pos, double volts, double angle, double density) {
+Vec total_accel(Vec pos, double volts, double angle, double density, int batches) {
   // Acceleration due to the external non-uniform electric field, using the x-component of the position
   Vec accel_ext = accel_from_E(Vec(pos.x, 0, 0), volts);
 
   // Acceleration due to the electric field from the line charge distribution
-  Vec accel_charge = accel_from_charge(pos, angle, density);
+  Vec accel_charge = accel_from_charge(pos, angle, density, batches);
 
   // Calculate the total acceleration as the vector sum of both contributions
   Vec total_acceleration = accel_ext + accel_charge;
@@ -479,11 +479,11 @@ Vec total_accel(Vec pos, double volts, double angle, double density) {
  * @param velocity The initial velocity vector (in m)
  * @param gen The random number generator to be used
  */
-Electron::Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status, double angle, double density):
+Electron::Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status, double angle, double density, int batches):
   _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _volts_per_cm(volts), _total_time(initial_time), generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
   
   if (!uniform_field)
-    _accel = total_accel(position, _volts_per_cm, angle, density);
+    _accel = total_accel(position, _volts_per_cm, angle, density, batches);
   
   _energy = J_to_eV(0.5 * m_e * dot(_v, _v));
   
@@ -610,7 +610,7 @@ void Electron::ionization(std::vector<Electron*> &electron_list, int& total_ioni
   if (track_child_ions) {
     std::uniform_real_distribution<double> rand_eV(1.0, 5.0);
     Vec near_therm_vel = random_unit_vector(generator) * eV_to_v(rand_eV(generator));
-    electron_list.push_back(new Electron(_total_time, _volts_per_cm, _x, near_therm_vel, generator, _debug, _status, _angle_param, _density_param));
+    electron_list.push_back(new Electron(_total_time, _volts_per_cm, _x, near_therm_vel, generator, _debug, _status, _angle_param, _density_param, quantity));
   }
   
   remove_energy(15.76);
@@ -1057,7 +1057,7 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
     // Setup the array of electrons to be simulated
     std::vector<Electron*> electron_list;
     // simulate electron
-    electron_list.push_back(new Electron(0, volts, starting_pos(generator, angle, density), random_unit_vector(generator) * eV_to_v(elec_energy), generator, debug, status, angle, density));
+    electron_list.push_back(new Electron(0, volts, starting_pos(generator, angle, density, batches), random_unit_vector(generator) * eV_to_v(elec_energy), generator, debug, status, angle, density, batches));
     
     // Open the file to write to
     std::ofstream file("../py/simulation-runs/"

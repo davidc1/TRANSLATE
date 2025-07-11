@@ -38,6 +38,7 @@ private:
   double _total_time;
   double _angle_param;
   double _density_param;
+  int quantity;
   
   double _energy;
   int _child_ions;
@@ -268,7 +269,7 @@ private:
 
 public:
 
-  Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status, double angle, double density);
+  Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status, double angle, double density, int batches);
   
   inline Vec position() const { return _x; }
   inline Vec velocity() const { return _v; }
@@ -284,3 +285,4 @@ public:
 void generate_plot(int volts, double elec_energy, double angle, double density, double cutoff, int cores, int write_every, int k, int batches, int debug, int status, ProgressBar& bar);
 
 #endif
+
