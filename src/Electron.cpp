@@ -798,8 +798,8 @@ void Electron::update_pos_vel() {
   }
   
   if (!uniform_field) {
-    _x += _v * _time_to_collision + 0.5 * accel_from_E(_x, _volts_per_cm) * _time_to_collision * _time_to_collision;
-    _v += 0.5 * (accel_from_E(x_old, _volts_per_cm) + accel_from_E(_x, _volts_per_cm)) * _time_to_collision;
+    _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _angle_param, _density_param, quantity) * _time_to_collision * _time_to_collision;
+    _v += 0.5 * (total_accel(x_old, _volts_per_cm, _angle_param, _density_param, quantity)  + total_accel(_x, _volts_per_cm, _angle_param, _density_param, quantity) ) * _time_to_collision;
   } else {
     _x += _v * _time_to_collision + 0.5 * _accel * _time_to_collision * _time_to_collision;
     _v += _accel * _time_to_collision;
