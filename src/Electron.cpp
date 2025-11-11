@@ -847,6 +847,8 @@ double Electron::next_collision(double u) {
   return time_step;
 }
 
+
+
 /*
  * Gives the probability for an interaction.
  * 
@@ -875,6 +877,52 @@ double Electron::probability(double u, double x_sec) {
   assert (prob < 1);
   return prob;
 }
+
+
+
+
+
+
+// Recombination and Escape checks
+static inline bool has_escaped(const Vec& pos) {
+    // 5 micrometers in meters
+    return std::fabs(pos.x) >= 5.0e-6;
+}
+
+static inline bool has_recombined(const Vec& pos,
+                                  double ke_eV,
+                                  double angle_deg,
+                                  double spacing_nm,
+                                  int N /* number of ions, reuse 'batches' */)
+{
+    if (ke_eV > 1.0) return false;                 
+
+    // Same geometry as accel_from_charge: ions along a line in x–z plane
+    const double r_k   = spacing_nm * 1e-9;        // nm -> m
+    const double rad   = angle_deg * M_PI / 180.0; // deg -> rad
+    const double cosA  = std::cos(rad);
+    const double sinA  = std::sin(rad);
+
+    // Discrete positions placed symmetrically; mirror accel_from_charge indexing
+    double min_d2 = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < N; ++i) {
+        const int iOffset = i - (N/2 - 1);
+        const double s    = iOffset * r_k;
+        const Vec ionPos(s * cosA, 0.0, s * sinA);
+
+        const Vec d = pos - ionPos;
+        const double d2 = dot(d, d);
+        if (d2 < min_d2) min_d2 = d2;
+    }
+
+    
+    const double r_thresh = 1.29e-9;
+    return (std::sqrt(min_d2) <= r_thresh);
+}
+
+
+
+
 
 /*
  * Advances the simulation by one step. In this order, this function...
@@ -1079,83 +1127,91 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
     double dist = electron_list.front()->distancesincelastinteraction();
     int total_ionizations = 0;
     
-    // Create a counter to check against when skipping steps to be written
-    int simulation_step = 1;
     
+    int simulation_step = 1;
+
     while (electron_list[0]->elapsed_time() < cutoff) {
-      // Update electrons, adding child electrons if necessary
+      
       std::vector<Electron*> new_electrons;
 
-      for (size_t el=0; el < electron_list.size(); el++) {
-	
-	auto thiselec = electron_list.at(el);
-	
-	thiselec->update(new_electrons, total_ionizations);
-	//electron_list.insert(electron_list.end(), new_electrons.begin(), new_electrons.end());
+      bool stop_now = false;   // Stop conditions variable that allows for early terimination of files
 
-	//if (el > 0) continue;
+      for (size_t el = 0; el < electron_list.size(); el++) {
 
-      // save info for all electrons
-      //for (size_t el=0; el < electron_list.size(); el++) {
+        auto thiselec = electron_list.at(el);
 
-      //if ( (track_child_ions == false) and (el > 0) ) continue;
+        
+        thiselec->update(new_electrons, total_ionizations);
 
-	// Only save every write_every steps
-	if (el == 0) simulation_step += 1;
-	
-	if (simulation_step % write_every != 0)
-	  continue;
-	
-      //auto thiselec = electron_list.at(el);
-      
-	// Get the relevant information of the primary electron (saved here in case this loop ends)
-	t = thiselec->elapsed_time();
-	dt = thiselec->timestep();  
-	x = thiselec->position().x;
-	y = thiselec->position().y;
-	z = thiselec->position().z;
-	ke = thiselec->ke();
-	vd = (x - starting_x) / t;
-	s  = thiselec->angle();
-	dist = thiselec->distancesincelastinteraction();
-	
-	if (status && s >= 0) { std::cout << "@ step " << simulation_step
-					  << " [x,y,z] -> " << "[ " << x << ", " << y << ", " << z << " ]"
-					  << " energy : " << ke << " scatter angle : " << s << std::endl; }
-	
-	
-	// Write the primary electron's information to a file (if using the full ionization algorithm, this may cause only the time and total ionizations to be accurate)
-	file << t * 1e9 << "," << x * 1e6 << "," << y * 1e6 << "," << z * 1e6 << "," << ke << ","
-	     << vd << ","<< s << "," << dist << "," << interactions << ","
-	     << total_ionizations;
-	if (track_child_ions == true) file << "," << el;
-	file << "\n";
-      }// loop through electrons and update their position / text-file
+        // Interruption of simulation under escape and recombination
+        if (el == 0) {
+          const Vec    pos_now = thiselec->position();
+          const double ke_now  = thiselec->ke();
+
+          const bool escaped    = has_escaped(pos_now);
+          const bool recombined = has_recombined(pos_now, ke_now, angle, density, batches);
+
+          if (escaped || recombined) {
+            // Ends simulation abruptly
+            stop_now = true;
+            break;  
+          }
+        }
+        // ---------------------------------------------------------------------
+
+        
+        if (el == 0) simulation_step += 1;
+        if (simulation_step % write_every != 0)
+          continue;
+
+        
+        double t    = thiselec->elapsed_time();
+        double x    = thiselec->position().x;
+        double y    = thiselec->position().y;
+        double z    = thiselec->position().z;
+        double ke   = thiselec->ke();
+        double vd   = (x - starting_x) / t;
+        double s    = thiselec->angle();
+        double dist = thiselec->distancesincelastinteraction();
+
+        if (status && s >= 0) {
+          std::cout << "@ step " << simulation_step
+                    << " [x,y,z] -> " << "[ " << x << ", " << y << ", " << z << " ]"
+                    << " energy : " << ke << " scatter angle : " << s << std::endl;
+        }
+
+        // Write info to the files
+        file << t * 1e9 << "," << x * 1e6 << "," << y * 1e6 << "," << z * 1e6 << "," << ke << ","
+            << vd << "," << s << "," << dist << "," << interactions << ","
+            << total_ionizations;
+        if (track_child_ions == true) file << "," << el;
+        file << "\n";
+      } 
+
+      // Stops simulation when recombination or escaping occurs
+      if (stop_now) break;
 
       
       electron_list.insert(electron_list.end(), new_electrons.begin(), new_electrons.end());
-      
-      // Remove electrons that have reached the anode
+
       if (!uniform_field)
-	electron_list.erase(std::remove_if(electron_list.begin(), electron_list.end(), [](auto const& i){ return hit_check(i->position()); }), electron_list.end());
-      
-      // If all electrons have reached the anode, end the simulation
+        electron_list.erase(std::remove_if(electron_list.begin(), electron_list.end(),
+                                          [](auto const& i){ return hit_check(i->position()); }),
+                            electron_list.end());
+
       if ((!uniform_field) && (electron_list.size() == 0))
-	break;
-      
-      
-      // Update the progress bar
+        break;
+
       if (uniform_field)
-	bar.update(electron_list.front()->elapsed_time() / cutoff, k);
+        bar.update(electron_list.front()->elapsed_time() / cutoff, k);
       else
-	bar.update(1 - (electron_list.front()->position().x - z_min) / ((z_max - z_min) * spawn_height_scale), k);
-      
-      // Display the progress bar
+        bar.update(1 - (electron_list.front()->position().x - z_min) / ((z_max - z_min) * spawn_height_scale), k);
+
       if (bar.min_prog(k))
-	bar.display();
-      
-      
-    }// while simulation is to run...
+        bar.display();
+
+    } 
+
     
     // Update the progress bar one last time
     bar.update(1, k);
