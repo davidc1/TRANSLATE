@@ -325,26 +325,6 @@ Vec accel_from_E(Vec pos, double volts) {
 }
 
 
-/*
- * Gives the acceleration felt by the electron in a magnetic field
- * @param The velocity of the electron (in m/s)
- * @return The acceleration of the electron (in m/s^2)
- */
-Vec accel_from_B(Vec velocity){
-  Vec magnetic_field(0, -0.5, 0); // In Teslas (Generally points in any direction perpendicular to E-field direction (+x direction) so have the B-field point in -y direction)
-  double B_x = (velocity.y * magnetic_field.z - velocity.z * magnetic_field.y);
-  double B_y = (velocity.z * magnetic_field.x - velocity.x * magnetic_field.z);
-  double B_z = (velocity.x * magnetic_field.y - velocity.y * magnetic_field.x);
-
-  Vec b_field(B_x, B_y, B_z);
-
-  return (e / m_e) * b_field;
-}
-
-
-Vec total_accel(Vec pos, double volts, Vec velocity){
-  return accel_from_B(velocity) + accel_from_E(pos, volts);
-}
 
 
 
@@ -363,7 +343,7 @@ Electron::Electron(double initial_time, double volts, Vec position, Vec velocity
   _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _volts_per_cm(volts), _total_time(initial_time), generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
   
   if (!uniform_field)
-    _accel = total_accel(_x, _volts_per_cm, _v);
+    _accel = accel_from_E(_x, _volts_per_cm);
   
   _energy = J_to_eV(0.5 * m_e * dot(_v, _v));
   
@@ -678,8 +658,8 @@ void Electron::update_pos_vel() {
   }
   
   if (!uniform_field) {
-    _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _v) * _time_to_collision * _time_to_collision;
-    _v += 0.5 * (total_accel(_x, _volts_per_cm, _v) + total_accel(_x, _volts_per_cm, _v)) * _time_to_collision;
+    _x += _v * _time_to_collision + 0.5 * accel_from_E(_x, _volts_per_cm) * _time_to_collision * _time_to_collision;
+    _v += 0.5 * (accel_from_E(_x, _volts_per_cm) + accel_from_E(_x, _volts_per_cm)) * _time_to_collision;
   } else {
     _x += _v * _time_to_collision + 0.5 * _accel * _time_to_collision * _time_to_collision;
     _v += _accel * _time_to_collision;
