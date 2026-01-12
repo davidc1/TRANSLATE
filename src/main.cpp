@@ -33,6 +33,15 @@ int main()
       std::cin.ignore();
       std::cin >> elec_energy;
     }
+
+    double magnetic;
+    std::cout << "Magnetic field magnitude [T]:";
+    std::cin >> magnetic;
+    while (std::cin.fail()) {
+      std::cin.clear();
+      std::cin.ignore();
+      std::cin >> magnetic;
+    }
     
     double cutoff;
     std::cout << "Stop After (s): ";
@@ -84,7 +93,7 @@ int main()
         ProgressBar bar(cores);
 
         for (int k = 0; k < cores; k++) {
-	  branches[k] = std::thread(generate_plot, int(volts_list[j]), elec_energy, cutoff, cores, write_every, k, batches, debug, status, std::ref(bar));   
+	  branches[k] = std::thread(generate_plot, int(volts_list[j]), elec_energy, magnetic, cutoff, cores, write_every, k, batches, debug, status, std::ref(bar));   
         }
     
         for (int k = 0; k < cores; k++) {

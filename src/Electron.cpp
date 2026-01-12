@@ -330,8 +330,9 @@ Vec accel_from_E(Vec pos, double volts) {
  * @param The velocity of the electron (in m/s)
  * @return The acceleration of the electron (in m/s^2)
  */
-Vec accel_from_B(Vec velocity){
-  Vec magnetic_field(0, -0.5, 0); // In Teslas (Generally points in any direction perpendicular to E-field direction (+x direction) so have the B-field point in -y direction)
+Vec accel_from_B(Vec velocity, double magnetic){
+  double magntitude = -1 * magnetic ;
+  Vec magnetic_field(0, magntitude, 0); // In Teslas (Generally points in any direction perpendicular to E-field direction (+x direction) so have the B-field point in -y direction)
   double B_x = (velocity.y * magnetic_field.z - velocity.z * magnetic_field.y);
   double B_y = (velocity.z * magnetic_field.x - velocity.x * magnetic_field.z);
   double B_z = (velocity.x * magnetic_field.y - velocity.y * magnetic_field.x);
@@ -342,8 +343,8 @@ Vec accel_from_B(Vec velocity){
 }
 
 
-Vec total_accel(Vec pos, double volts, Vec velocity){
-  return accel_from_B(velocity) + accel_from_E(pos, volts);
+Vec total_accel(Vec pos, double volts, Vec velocity, double magnetic){
+  return accel_from_B(velocity, magnetic) + accel_from_E(pos, volts);
 }
 
 
@@ -359,11 +360,11 @@ Vec total_accel(Vec pos, double volts, Vec velocity){
  * @param velocity The initial velocity vector (in m)
  * @param gen The random number generator to be used
  */
-Electron::Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status):
+Electron::Electron(double initial_time, double volts, double magnetic, Vec position, Vec velocity, std::mt19937& gen, int debug, int status):
   _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _volts_per_cm(volts), _total_time(initial_time), generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
   
   if (!uniform_field)
-    _accel = total_accel(_x, _volts_per_cm, _v);
+    _accel = total_accel(_x, _volts_per_cm, _v, _bfield);
   
   _energy = J_to_eV(0.5 * m_e * dot(_v, _v));
   
@@ -490,7 +491,7 @@ void Electron::ionization(std::vector<Electron*> &electron_list, int& total_ioni
   if (track_child_ions) {
     std::uniform_real_distribution<double> rand_eV(1.0, 5.0);
     Vec near_therm_vel = random_unit_vector(generator) * eV_to_v(rand_eV(generator));
-    electron_list.push_back(new Electron(_total_time, _volts_per_cm, _x, near_therm_vel, generator, _debug, _status));
+    electron_list.push_back(new Electron(_total_time, _volts_per_cm, _bfield,_x, near_therm_vel, generator, _debug, _status));
   }
   
   remove_energy(15.76);
@@ -678,8 +679,8 @@ void Electron::update_pos_vel() {
   }
   
   if (!uniform_field) {
-    _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _v) * _time_to_collision * _time_to_collision;
-    _v += 0.5 * (total_accel(_x, _volts_per_cm, _v) + total_accel(_x, _volts_per_cm, _v)) * _time_to_collision;
+    _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _v, _bfield) * _time_to_collision * _time_to_collision;
+    _v += 0.5 * (total_accel(_x, _volts_per_cm, _v, _bfield) + total_accel(_x, _volts_per_cm, _v, _bfield)) * _time_to_collision;
   } else {
     _x += _v * _time_to_collision + 0.5 * _accel * _time_to_collision * _time_to_collision;
     _v += _accel * _time_to_collision;
@@ -926,7 +927,7 @@ void Electron::update(std::vector<Electron*> &electron_list, int& total_ionizati
  * @param batches The number of batches to be generated
  * @param bar The progress bar to be used
  */
-void generate_plot(int volts, double elec_energy, double cutoff, int cores, int write_every, int k, int batches, int debug, int status, ProgressBar& bar) {
+void generate_plot(int volts, double elec_energy, double magnetic, double cutoff, int cores, int write_every, int k, int batches, int debug, int status, ProgressBar& bar) {
   
   for (int i = 0; i < batches; i++) {
     
@@ -937,7 +938,7 @@ void generate_plot(int volts, double elec_energy, double cutoff, int cores, int 
     // Setup the array of electrons to be simulated
     std::vector<Electron*> electron_list;
     // simulate electron
-    electron_list.push_back(new Electron(0, volts, starting_pos(generator), random_unit_vector(generator) * eV_to_v(elec_energy), generator, debug, status));
+    electron_list.push_back(new Electron(0, volts, magnetic, starting_pos(generator), random_unit_vector(generator) * eV_to_v(elec_energy), generator, debug, status));
     
     // Open the file to write to
     std::ofstream file("../py/simulation-runs/"
