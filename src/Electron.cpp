@@ -1,5 +1,6 @@
 #include <array>
 #include <chrono>
+#include <thread>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -882,7 +883,11 @@ double Electron::probability(double u, double x_sec) {
 
 
 
-
+/*
+ * Gives the state of any electron undergoing recombination or escaping
+ * 
+ * @return The boolean of the electron state
+ */
 // Recombination and Escape checks
 static inline bool has_escaped(const Vec& pos) {
     // 5 micrometers in meters
@@ -1189,7 +1194,14 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
       } 
 
       // Stops simulation when recombination or escaping occurs
-      if (stop_now) break;
+      if (stop_now) {
+        bar.update(1, k);
+        if (bar.min_prog(k)) bar.display();
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        break;
+      }
+
 
       
       electron_list.insert(electron_list.end(), new_electrons.begin(), new_electrons.end());
