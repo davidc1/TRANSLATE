@@ -58,6 +58,15 @@ Vec random_unit_vector(std::mt19937& gen) {
   return v;
 }
 
+inline Vec cross(const Vec& a, const Vec& b) {
+    return Vec(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    );
+}
+
+
 /*
  * Return a velocity whose magnitude is chosen from the Maxwell-Boltzmann distribution for
  * argon / the electron. The velocity's direction is randomly chosen
@@ -361,7 +370,9 @@ Vec total_accel(Vec pos, double volts, Vec velocity, double magnetic){
  * @param gen The random number generator to be used
  */
 Electron::Electron(double initial_time, double volts, double magnetic, Vec position, Vec velocity, std::mt19937& gen, int debug, int status):
-  _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _volts_per_cm(volts), _total_time(initial_time), generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
+  _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _lastinteractionposition(position), _dist(0.0),
+  _interaction(0), _volts_per_cm(volts), _time_to_collision(0.0), _total_time(initial_time), _bfield(magnetic),
+  generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
   
   if (!uniform_field)
     _accel = total_accel(_x, _volts_per_cm, _v, _bfield);
@@ -679,11 +690,11 @@ void Electron::update_pos_vel() {
   }
   
   if (!uniform_field) {
-    _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _v, _bfield) * _time_to_collision * _time_to_collision;
+    _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _v, _bfield)* _time_to_collision * _time_to_collision;
     _v += 0.5 * (total_accel(_x, _volts_per_cm, _v, _bfield) + total_accel(_x, _volts_per_cm, _v, _bfield)) * _time_to_collision;
   } else {
-    _x += _v * _time_to_collision + 0.5 * _accel * _time_to_collision * _time_to_collision;
-    _v += _accel * _time_to_collision;
+    _x += _v * _time_to_collision + 0.5 *total_accel(_x, _volts_per_cm, _v, _bfield) * _time_to_collision * _time_to_collision;
+    _v += total_accel(_x, _volts_per_cm, _v, _bfield) * _time_to_collision;
   }
 
   if (norm(x_old-_x) > 1e-4) {
@@ -703,6 +714,7 @@ void Electron::update_pos_vel() {
   
   return;
 }
+
 
 /*
  * Draws the next timestep to use.
@@ -778,6 +790,8 @@ void Electron::update(std::vector<Electron*> &electron_list, int& total_ionizati
   
   _scatteringangle = -1;
   
+  // Collision-related terminal velocity cap disabled for vacuum tests.
+#if 0
   // If interactions are turned off, implement a terminal velocity
   if (!interactions) {
     if (norm(_v) > 1000) {
@@ -785,10 +799,11 @@ void Electron::update(std::vector<Electron*> &electron_list, int& total_ionizati
       _v *= 1000;
     }
   }
+#endif
   
   // Draw an argon vector and determine interaction probabilities
   _energy = J_to_eV(0.5 * m_e * dot(_v, _v));
-  
+#if 0
   Vec vm = random_velocity(generator);
   double u = norm(_v - vm);
   
@@ -905,6 +920,7 @@ void Electron::update(std::vector<Electron*> &electron_list, int& total_ionizati
     _dist = norm( _lastinteractionposition - _x );
     _lastinteractionposition = _x;
   }
+#endif
   
   // Update the electron's energy and total time simulated
   _energy = J_to_eV(0.5 * m_e * dot(_v, _v));
@@ -1053,4 +1069,3 @@ void generate_plot(int volts, double elec_energy, double magnetic, double cutoff
   
   return;
 }
-
