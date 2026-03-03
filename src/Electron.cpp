@@ -1,6 +1,8 @@
 #include <array>
 #include <chrono>
 #include <thread>
+#include <cmath>
+#include <limits>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -408,18 +410,11 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
     double sinA = std::sin(rad);
 
 
-
-    // We'll place 20 protons centered on z=0:
-    // indices from -9..+10 so we get 20 total
-    // (If you'd rather do 0..19, that's fine too—just adjust as needed.)
-
     // Net electric field (vector sum)
     Vec E_net(0.0, 0.0, 0.0);
 
     for (int i = 0; i < N; i++) {
-        // For symmetrical distribution about 0, let i run from -9..+10
-        // but be mindful that -9..+10 is 20 steps if i= -9..10 inclusive.
-        // We'll do iOffset = i - (N/2 - 1) so that iOffset runs from -9..10
+
         int iOffset = i - (N/2 - 1);
 
         // Position of the i-th proton on the z-axis
@@ -430,27 +425,17 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
         Vec r_vec = pos - protonPos;
         double dist = norm(r_vec);
 
-        // Avoid division by zero if the electron is exactly at a proton's location
-        if (dist < 1e-15) {
-            // If you'd prefer to handle a collision or skip it, do so here
-            continue;
-        }
+        if (dist < 1e-15) continue;
 
-        // Unit vector from proton -> electron
-        Vec r_hat = r_vec / dist;
-
-        // Proton charge = +e
-        // E = k_e * (q_p) / r^2  * (r_hat)
-        // dist^2 in denominator
-        Vec E_contrib = (k_e * e / (dist * dist)) * r_hat;
+        // Softened Coulomb field: E = k_e * e * r_vec / (r² + γ²)^(3/2)
+        static const double gamma = 1e-9;  
+        double soft_denom = std::pow(dist * dist + gamma * gamma, 1.5);
+        Vec E_contrib = (k_e * e / soft_denom) * r_vec;
 
         // Sum into net field
         E_net += E_contrib;
     }
 
-    // The electron has charge = -e, so force = q_e * E_net = (-e) * E_net
-    // But typically we do acceleration = (q_e/m_e)*E_net.
-    // If q_e = -e, this automatically flips direction, but let's keep it explicit.
     double q_e = -e;
     Vec acceleration = (q_e / m_e) * E_net;
 
@@ -481,7 +466,27 @@ Vec total_accel(Vec pos, double volts, double angle, double density, int batches
  * @param gen The random number generator to be used
  */
 Electron::Electron(double initial_time, double volts, Vec position, Vec velocity, std::mt19937& gen, int debug, int status, double angle, double density, int batches):
-  _child_ions(0), _x(position), _v(velocity), _accel((e / m_e) * volts * 1e2, 0, 0), _volts_per_cm(volts), _total_time(initial_time), generator(gen), _debug(debug), _status(status), _K_max_var(K_max), _lambda_var(lambda), _beta_var(beta) {
+  _x(position),
+  _v(velocity),
+  _accel((e / m_e) * volts * 1e2, 0, 0),
+  _lastinteractionposition(position),
+  _scatteringangle(0),
+  _dist(0),
+  _K_max_var(K_max),
+  _lambda_var(lambda),
+  _beta_var(beta),
+  _debug(debug),
+  _status(status),
+  _interaction(0),
+  _volts_per_cm(volts),
+  _time_to_collision(0),
+  _total_time(initial_time),
+  _angle_param(angle),
+  _density_param(density),
+  quantity(batches),
+  _energy(0),
+  _child_ions(0),
+  generator(gen) {
   
   if (!uniform_field)
     _accel = total_accel(position, _volts_per_cm, angle, density, batches);
@@ -802,8 +807,32 @@ void Electron::update_pos_vel() {
     _x += _v * _time_to_collision + 0.5 * total_accel(_x, _volts_per_cm, _angle_param, _density_param, quantity) * _time_to_collision * _time_to_collision;
     _v += 0.5 * (total_accel(x_old, _volts_per_cm, _angle_param, _density_param, quantity)  + total_accel(_x, _volts_per_cm, _angle_param, _density_param, quantity) ) * _time_to_collision;
   } else {
-    _x += _v * _time_to_collision + 0.5 * _accel * _time_to_collision * _time_to_collision;
-    _v += _accel * _time_to_collision;
+    // Velocity Verlet: uniform external field (_accel) plus softened Coulomb from ion line
+    Vec a_old = _accel + accel_from_charge(x_old, _angle_param, _density_param, quantity);
+
+    // Adaptive sub-stepping: limit each sub-step so that |a*dt| < 10% of |v|
+    // This prevents the Verlet integrator from overshooting when close to an ion.
+    double dt_remaining = _time_to_collision;
+    while (dt_remaining > 0) {
+      double a_mag = norm(a_old);
+      double v_mag = norm(_v);
+
+      // Maximum sub-step: Δv should not exceed 10% of current speed (floor of 1e4 m/s to avoid division issues at very low v)
+      double dt_sub = dt_remaining;
+      if (a_mag > 0) {
+        double dt_limit = 0.1 * std::max(v_mag, 1e4) / a_mag;
+        if (dt_sub > dt_limit)
+          dt_sub = dt_limit;
+      }
+
+      // Velocity Verlet sub-step
+      _x += _v * dt_sub + 0.5 * a_old * dt_sub * dt_sub;
+      Vec a_new = _accel + accel_from_charge(_x, _angle_param, _density_param, quantity);
+      _v += 0.5 * (a_old + a_new) * dt_sub;
+
+      a_old = a_new;
+      dt_remaining -= dt_sub;
+    }
   }
 
   if (norm(x_old-_x) > 1e-4) {
@@ -900,7 +929,7 @@ static inline bool has_recombined(const Vec& pos,
                                   double spacing_nm,
                                   int N /* number of ions, reuse 'batches' */)
 {
-    if (ke_eV > 1.0) return false;                 
+    if (ke_eV > 1.0) return false;
 
     // Same geometry as accel_from_charge: ions along a line in x–z plane
     const double r_k   = spacing_nm * 1e-9;        // nm -> m
@@ -908,7 +937,7 @@ static inline bool has_recombined(const Vec& pos,
     const double cosA  = std::cos(rad);
     const double sinA  = std::sin(rad);
 
-    // Discrete positions placed symmetrically; mirror accel_from_charge indexing
+    // Find minimum distance to any ion
     double min_d2 = std::numeric_limits<double>::infinity();
     for (int i = 0; i < N; ++i) {
         const int iOffset = i - (N/2 - 1);
@@ -920,7 +949,6 @@ static inline bool has_recombined(const Vec& pos,
         if (d2 < min_d2) min_d2 = d2;
     }
 
-    
     const double r_thresh = 1.29e-9;
     return (std::sqrt(min_d2) <= r_thresh);
 }
@@ -1102,9 +1130,10 @@ void Electron::update(std::vector<Electron*> &electron_list, int& total_ionizati
 void generate_plot(int volts, double elec_energy, double angle, double density, double cutoff, int cores, int write_every, int k, int batches, int debug, int status, ProgressBar& bar) {
   
   for (int i = 0; i < batches; i++) {
+    const int file_id = cores * i + (k + 1);
     
     // Setup a progress bar and create the random number generator for the thread
-    bar.new_file(cores * i + (k + 1), k);
+    bar.new_file(file_id, k);
     std::mt19937 generator(std::chrono::system_clock::now().time_since_epoch().count());
     
     // Setup the array of electrons to be simulated
@@ -1114,7 +1143,7 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
     
     // Open the file to write to
     std::ofstream file("../py/simulation-runs/"
-		       + std::to_string(volts) + "V_" + std::to_string(cores * i + (k + 1)) + ".txt");
+		       + std::to_string(volts) + "V_" + std::to_string(file_id) + ".txt");
     assert(file.is_open());
     
     // Grab initial conditions
@@ -1144,7 +1173,6 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
       for (size_t el = 0; el < electron_list.size(); el++) {
 
         auto thiselec = electron_list.at(el);
-
         
         thiselec->update(new_electrons, total_ionizations);
 
@@ -1197,8 +1225,6 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
       if (stop_now) {
         bar.update(1, k);
         if (bar.min_prog(k)) bar.display();
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
         break;
       }
 
@@ -1240,4 +1266,3 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
   
   return;
 }
-
