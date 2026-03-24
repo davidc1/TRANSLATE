@@ -25,6 +25,7 @@ const double beta = 1 / lambda;                 // Mean of the exponential distr
 const bool is_diff = false;                      // Use differential cross-sections?
 const bool is_gas = false;                       // Is this in gas? Or liquid? Make sure to update the number density
 const bool track_child_ions = false;            // Keep track of child electrons and their ionizations? Or only ionizations of the main, simulated electron?
+const bool recombination = false;               // Simulate recombination with ion track? If false, runs default TRANSLATE (no Coulomb, no ion spawning, no escape/recombination termination)
 const bool uniform_field = true;                // Is this in a uniform field? Or are we simulating a tip / tip array?
 const bool interactions = true;                 // Simulate interactions?
 const bool single_tip = true;                   // Is this is a non-uniform field, simulate a single tip? Or simulate an array of tips?

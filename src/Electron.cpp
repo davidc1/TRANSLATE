@@ -139,6 +139,25 @@ Vec starting_pos(std::mt19937& gen,
                  double angle,   // radians: 0 = +x axis, π/2 = +z axis
                  double density, int batches) // r_k in nm
 {
+    // If recombination is off, use the default spawn position
+    if (!recombination) {
+      if (uniform_field)
+        return Vec(0, 0, 0);
+
+      std::normal_distribution<double> dist(0.0, 1.0);
+      std::uniform_real_distribution<double> uniform(0.0, 1.0);
+
+      Vec random_disc(0, dist(gen), dist(gen));
+
+      if (norm(random_disc) != 0)
+        random_disc /= norm(random_disc);
+
+      random_disc *= uniform(gen);
+      random_disc *= (r_max - r_min) * spawn_width_scale;
+
+      return Vec((z_max - z_min) * spawn_height_scale + z_min, random_disc.y, random_disc.z);
+    }
+
     // ------------- geometry constants ------------------------------------
     const int    N        =  batches;      // number of Argon ions
     const double r_k      = density * 1e-9; // nm -> m
@@ -393,9 +412,12 @@ Vec accel_from_E(Vec pos, double volts) {
  *
  * Return the acceleration (m/s^2).
  */
-Vec accel_from_charge(Vec pos, double angle, double density, int batches) 
+Vec accel_from_charge(Vec pos, double angle, double density, int batches)
 {
-    static const double k_e = 8.9875517923e9; 
+    // No Coulomb interactions when recombination is off
+    if (!recombination) return Vec(0.0, 0.0, 0.0);
+
+    static const double k_e = 8.9875517923e9;
     // Number of protons
     const int N = batches;
 
@@ -428,7 +450,7 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
         if (dist < 1e-15) continue;
 
         // Softened Coulomb field: E = k_e * e * r_vec / (r² + γ²)^(3/2)
-        static const double gamma = 1e-9;  
+        static const double gamma = 0.2e-9;
         double soft_denom = std::pow(dist * dist + gamma * gamma, 1.5);
         Vec E_contrib = (k_e * e / soft_denom) * r_vec;
 
@@ -439,7 +461,29 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
     double q_e = -e;
     Vec acceleration = (q_e / m_e) * E_net;
 
-    return acceleration; 
+    return acceleration;
+}
+
+
+// Minimum distance from position to any ion in the line charge
+static inline double min_dist_to_ion(const Vec& pos, double angle_deg,
+                                      double spacing_nm, int N)
+{
+    const double r_k  = spacing_nm * 1e-9;
+    const double rad  = angle_deg * M_PI / 180.0;
+    const double cosA = std::cos(rad);
+    const double sinA = std::sin(rad);
+
+    double min_d2 = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < N; ++i) {
+        const int iOffset = i - (N/2 - 1);
+        const double s    = iOffset * r_k;
+        const Vec ionPos(s * cosA, 0.0, s * sinA);
+
+        const double d2 = dot(pos - ionPos, pos - ionPos);
+        if (d2 < min_d2) min_d2 = d2;
+    }
+    return std::sqrt(min_d2);
 }
 
 
@@ -810,19 +854,35 @@ void Electron::update_pos_vel() {
     // Velocity Verlet: uniform external field (_accel) plus softened Coulomb from ion line
     Vec a_old = _accel + accel_from_charge(x_old, _angle_param, _density_param, quantity);
 
-    // Adaptive sub-stepping: limit each sub-step so that |a*dt| < 10% of |v|
-    // This prevents the Verlet integrator from overshooting when close to an ion.
+    // Adaptive sub-stepping with two constraints:
+    //   (1) Acceleration-change limit: keep |Δa/a| < 5% per sub-step
+    //   (2) Displacement limit: move no more than 10% of distance to nearest ion
+    // Together these prevent the Verlet integrator from overshooting the
+    // rapidly varying Coulomb field near an ion.
     double dt_remaining = _time_to_collision;
+    int substep_count = 0;
+    const int max_substeps = 5000;
+
     while (dt_remaining > 0) {
       double a_mag = norm(a_old);
       double v_mag = norm(_v);
+      double r_min = min_dist_to_ion(_x, _angle_param, _density_param, quantity);
 
-      // Maximum sub-step: Δv should not exceed 10% of current speed (floor of 1e4 m/s to avoid division issues at very low v)
       double dt_sub = dt_remaining;
+
+      // Constraint 1: limit fractional change in acceleration to ~5%
       if (a_mag > 0) {
-        double dt_limit = 0.1 * std::max(v_mag, 1e4) / a_mag;
-        if (dt_sub > dt_limit)
-          dt_sub = dt_limit;
+        double dt_accel = 0.05 * std::max(v_mag, 1.0) / a_mag;
+        if (dt_sub > dt_accel)
+          dt_sub = dt_accel;
+      }
+
+      // Constraint 2: don't move more than 10% of the distance to the
+      // nearest ion.
+      if (v_mag > 0 && r_min > 0) {
+        double dt_disp = 0.1 * r_min / v_mag;
+        if (dt_sub > dt_disp)
+          dt_sub = dt_disp;
       }
 
       // Velocity Verlet sub-step
@@ -832,6 +892,12 @@ void Electron::update_pos_vel() {
 
       a_old = a_new;
       dt_remaining -= dt_sub;
+
+      if (++substep_count >= max_substeps) {
+        std::cerr << "WARNING: sub-step limit (" << max_substeps
+                  << ") reached, dt_remaining=" << dt_remaining << std::endl;
+        break;
+      }
     }
   }
 
@@ -1177,7 +1243,7 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
         thiselec->update(new_electrons, total_ionizations);
 
         // Interruption of simulation under escape and recombination
-        if (el == 0) {
+        if (recombination && el == 0) {
           const Vec    pos_now = thiselec->position();
           const double ke_now  = thiselec->ke();
 
@@ -1187,7 +1253,7 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
           if (escaped || recombined) {
             // Ends simulation abruptly
             stop_now = true;
-            break;  
+            break;
           }
         }
         // ---------------------------------------------------------------------

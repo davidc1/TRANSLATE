@@ -36,7 +36,7 @@ int main()
     
 
     double angle;
-    std::cout << "Angle of ionization track with Electric field direction [Degrees]: ";
+    std::cout << "Angle of ionization track with Electric field direction [Degrees] (For recombination only): ";
     std::cin >> angle;
     while (std::cin.fail()){
         std::cin.clear();
@@ -45,7 +45,7 @@ int main()
     }
 
     double density;
-    std::cout << "Distance between ions [nm]: ";
+    std::cout << "Distance between ions [nm] (For recombination only): ";
     std::cin >> density;
     while (std::cin.fail()){
         std::cin.clear();
