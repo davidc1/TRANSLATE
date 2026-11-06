@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <thread>
@@ -132,11 +133,12 @@ Vec starting_pos(std::mt19937& gen) {
 */
 
 
-
-// Generate a random electron position around a randomly-chosen Argon ion
+// Generate a random electron position around a uniquely-assigned Argon ion.
 // The Argon ions lie along a line tilted by `angle` in the x–z plane.
+// Each electron is assigned to a unique ion via a shuffled index list that
+// is built once on the first call and handed out sequentially.
 Vec starting_pos(std::mt19937& gen,
-                 double angle,   // radians: 0 = +x axis, π/2 = +z axis
+                 double angle,   // degrees: 0 = +x axis
                  double density, int batches) // r_k in nm
 {
     // If recombination is off, use the default spawn position
@@ -158,48 +160,127 @@ Vec starting_pos(std::mt19937& gen,
       return Vec((z_max - z_min) * spawn_height_scale + z_min, random_disc.y, random_disc.z);
     }
 
-    // ------------- geometry constants ------------------------------------
-    const int    N        =  batches;      // number of Argon ions
-    const double r_k      = density * 1e-9; // nm -> m
-    const double r_0      = 5e-10;   // sphere radius for electron (m)
-    double rad  = angle * M_PI / 180.0;          // deg → rad
-    double cosA = std::cos(rad);
-    double sinA = std::sin(rad);
+    // Geometry shared by both spawn modes.
+    // For even N: N+1 total ions (-N/2 ... 0 ... +N/2), symmetric about origin.
+    // For odd  N: N   total ions (-(N-1)/2 ... 0 ... +(N-1)/2), origin always present.
+    const int    N        = batches;
+    const double r_k      = density * 1e-9;          // ion spacing: nm -> m
+    const double r_0      = 5e-10;                   // fixed spawn radius: 0.3nm (m)
+    const double rad      = angle * M_PI / 180.0;
+    const double cosA     = std::cos(rad);
+    const double sinA     = std::sin(rad);
+    const int    N_ions   = N + (N % 2 == 0 ? 1 : 0); // total ions on track
 
+    Vec ionPos(0.0, 0.0, 0.0);  // default: origin (used by both paths below)
 
-    // ------------- build the ion positions --------------------------------
-    std::vector<Vec> argonPositions;
-    argonPositions.reserve(N);
+    if (Use_Finite_Ion_Distribution) {
+        // ── Finite distribution mode ──────────────────────────────────────────
+        // Each electron is assigned to a unique non-origin ion so that the full
+        // track is sampled.  For even N the origin ion is excluded (N electrons
+        // share N non-origin ions); for odd N all N ions including the origin
+        // are valid spawn sites.
+        //
+        // Static state persists across calls: rebuilt once per batch, then each
+        // call consumes the next index, resetting automatically after N electrons.
+        static std::vector<Vec> argonPositions;
+        static std::vector<int> assignment;
+        static int next_index = 0;
 
-    int halfN = N / 2;
-    for (int i = -halfN; i <= halfN; ++i) {
-        double s   = i * r_k;              // signed distance along ion line
-        double x_i =  s * cosA;            // project onto x
-        double z_i =  s * sinA;            // project onto z
-        argonPositions.emplace_back(x_i, 0.0, z_i);
+        if (next_index == 0 || next_index >= N) {
+            argonPositions.clear();
+            argonPositions.reserve(N);
+
+            for (int i = 0; i < N_ions; ++i) {
+                const int iOffset = i - N_ions / 2;
+
+                // For even N, skip the origin ion — electrons are spread across
+                // the remaining N non-origin sites only.
+                if (N % 2 == 0 && iOffset == 0) continue;
+
+                const double s = iOffset * r_k;
+                argonPositions.emplace_back(s * cosA, 0.0, s * sinA);
+            }
+
+            assignment.resize(N);
+            for (int i = 0; i < N; ++i) assignment[i] = i;
+            std::shuffle(assignment.begin(), assignment.end(), gen);
+            next_index = 0;
+        }
+
+        ionPos     = argonPositions[assignment[next_index]];
+        next_index++;
+
     }
+    // ── Origin mode (Use_Finite_Ion_Distribution = false) ────────────────────
+    // ionPos stays at (0,0,0): every electron spawns around the central ion,
+    // which is guaranteed to exist for any N by the symmetric geometry above.
 
-    // ------------- pick one ion at random ---------------------------------
-    std::uniform_int_distribution<int> pick(0,
-        static_cast<int>(argonPositions.size()) - 1);
-    Vec ionPos = argonPositions[pick(gen)];
+    // ── Ellipsoidal shell with ion at focus ──────────────────────────────────
+    //
+    // Prolate spheroid with major axis along the drift field direction (+x).
+    // The ion sits at one FOCUS of the ellipsoid, not the center. This means
+    // the shell extends farther from the ion in the +x direction (with the
+    // field) and is closer in the -x direction (against the field), biasing
+    // spawn positions toward +x as motivated by Stark polarization of the
+    // pre-ionization electron cloud (Bonfim 2025).
+    //
+    // Polar equation from focus:
+    //
+    //     r(θ) = ℓ / (1 - e·cosθ_field)
+    //
+    // where θ_field is the angle between the spawn direction and +x (field),
+    // e = spawn_eccentricity ∈ [0, 1), and ℓ is the semi-latus rectum.
+    //
+    // Key distances from the ion:
+    //     θ_field = 0   (+x, with field):    r = ℓ/(1-e)   [farthest]
+    //     θ_field = π   (-x, against field): r = ℓ/(1+e)   [nearest]
+    //     θ_field = π/2 (perpendicular):     r = ℓ         [intermediate]
+    //
+    // Volume conservation (ab² = r_0³) ensures the ellipsoid has the same
+    // volume as the original sphere, so the average spawn distance is
+    // preserved across eccentricity values:
+    //
+    //     semi-major axis:    a = r_0 / (1 - e²)^{1/3}
+    //     semi-minor axis:    b = r_0 · (1 - e²)^{1/6}
+    //     semi-latus rectum:  ℓ = a(1 - e²) = r_0 · (1 - e²)^{2/3}
+    //
+    // At e = 0: ℓ = r_0, denominator = 1 for all angles, r = r_0 everywhere.
+    // This recovers the original uniform spherical shell exactly.
+    //
+    // Angular sampling is ISOTROPIC: cosθ uniform in [-1, 1], φ uniform in
+    // [0, 2π]. The direction of electron ejection is random; only the
+    // distance varies with angle. The spatial bias toward +x arises purely
+    // from the shell geometry, not from angular weighting.
 
-    // ------------- random point inside sphere of radius r_0 ---------------
+    const double eps  = 0;                          // e ∈ [0, 1) For now use 0.1
+    const double eps2 = eps * eps;
+    const double ell  = r_0 * std::cbrt((1.0 - eps2) * (1.0 - eps2)); // ℓ = r_0·(1-e²)^{2/3}
+
     std::uniform_real_distribution<double> U(0.0, 1.0);
 
-    double u  = U(gen);
-    double r  = r_0 * std::cbrt(u);              // radius ∝ u^{1/3}
-    double cz = 2.0 * U(gen) - 1.0;              // cosθ in [-1,1]
-    double sz = std::sqrt(1.0 - cz * cz);
-    double phi = 2.0 * M_PI * U(gen);
+    // Isotropic direction on the unit sphere (no polar bias).
+    // cosθ uniform in [-1, 1] guarantees equal probability per solid angle.
+    const double cz  = 2.0 * U(gen) - 1.0;         // cosθ ∈ [-1, 1]
+    const double sz  = std::sqrt(1.0 - cz * cz);   // sinθ
+    const double phi = 2.0 * M_PI * U(gen);         // φ ∈ [0, 2π]
 
-    double dx = r * sz * std::cos(phi);
-    double dy = r * sz * std::sin(phi);
-    double dz = r * cz;
+    const double nx = sz * std::cos(phi);           // unit direction x
+    const double ny = sz * std::sin(phi);           // unit direction y
+    const double nz = cz;                           // unit direction z
+
+    // Ellipsoidal radius from focus.
+    // cos(θ_field) = n̂ · x̂ = nx, since the drift field is along +x.
+    // When e = 0: r_spawn = r_0 for all directions (sphere).
+    // When e > 0: r_spawn > r_0 toward +x, r_spawn < r_0 toward -x.
+    const double cos_field = nx;
+    const double r_spawn   = ell / (1.0 - eps * cos_field);
+
+    const double dx = r_spawn * nx;                 // x-offset (m)
+    const double dy = r_spawn * ny;                 // y-offset (m)
+    const double dz = r_spawn * nz;                 // z-offset (m)
 
     return ionPos + Vec(dx, dy, dz);
 }
-
 
 
 
@@ -418,6 +499,13 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
     if (!recombination) return Vec(0.0, 0.0, 0.0);
 
     static const double k_e = 8.9875517923e9;
+
+    // The medium screens the ion-electron Coulomb field by its relative
+    // permittivity: E = (k_e / eps_r) * e * r_vec / (r^2 + gamma^2)^(3/2).
+    // Liquid argon has eps_r ~= 1.505 at 87 K; gaseous argon is ~1.
+    const double eps_r = is_gas ? eps_r_gas : eps_r_liquid;
+    const double k_eff = k_e / eps_r;
+
     // Number of protons
     const int N = batches;
 
@@ -432,12 +520,17 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
     double sinA = std::sin(rad);
 
 
+    // For even N, add one ion at the origin so the track is always symmetric:
+    // N/2 ions on each side + 1 at origin = N+1 total ions.
+    // For odd N, N ions suffice with one naturally at the origin.
+    const int N_ions = N + (N % 2 == 0 ? 1 : 0);
+
     // Net electric field (vector sum)
     Vec E_net(0.0, 0.0, 0.0);
 
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < N_ions; i++) {
 
-        int iOffset = i - (N/2 - 1);
+        int iOffset = i - N_ions / 2;
 
         // Position of the i-th proton on the z-axis
         double s_proton = iOffset * r_k;
@@ -449,8 +542,8 @@ Vec accel_from_charge(Vec pos, double angle, double density, int batches)
 
         if (dist < 1e-15) continue;
 
-        // Softened Coulomb field: E = k_e * e * r_vec / (r² + γ²)^(3/2)
-        static const double gamma = 0.2e-9;
+        // Screened, softened Coulomb field: E = k_eff * e * r_vec / (r² + γ²)^(3/2)
+        static const double gamma = 1e-10;
         double soft_denom = std::pow(dist * dist + gamma * gamma, 1.5);
         Vec E_contrib = (k_e * e / soft_denom) * r_vec;
 
@@ -832,9 +925,6 @@ void Electron::momentum_collision(double u, Vec vm) {
   return;
 }
 
-/*
- * Classically updates the electron's position and velocity.
- */
 void Electron::update_pos_vel() {
 
   Vec x_old = _x;
@@ -854,14 +944,10 @@ void Electron::update_pos_vel() {
     // Velocity Verlet: uniform external field (_accel) plus softened Coulomb from ion line
     Vec a_old = _accel + accel_from_charge(x_old, _angle_param, _density_param, quantity);
 
-    // Adaptive sub-stepping with two constraints:
-    //   (1) Acceleration-change limit: keep |Δa/a| < 5% per sub-step
-    //   (2) Displacement limit: move no more than 10% of distance to nearest ion
-    // Together these prevent the Verlet integrator from overshooting the
-    // rapidly varying Coulomb field near an ion.
+
     double dt_remaining = _time_to_collision;
     int substep_count = 0;
-    const int max_substeps = 5000;
+    const int max_substeps = 500;
 
     while (dt_remaining > 0) {
       double a_mag = norm(a_old);
@@ -870,17 +956,15 @@ void Electron::update_pos_vel() {
 
       double dt_sub = dt_remaining;
 
-      // Constraint 1: limit fractional change in acceleration to ~5%
+      // limit fractional change in acceleration to ~25%
       if (a_mag > 0) {
-        double dt_accel = 0.05 * std::max(v_mag, 1.0) / a_mag;
+        double dt_accel = 0.25 * std::max(v_mag, 1.0) / a_mag;
         if (dt_sub > dt_accel)
           dt_sub = dt_accel;
       }
 
-      // Constraint 2: don't move more than 10% of the distance to the
-      // nearest ion.
       if (v_mag > 0 && r_min > 0) {
-        double dt_disp = 0.1 * r_min / v_mag;
+        double dt_disp = 0.25 * r_min / v_mag;
         if (dt_sub > dt_disp)
           dt_sub = dt_disp;
       }
@@ -918,6 +1002,7 @@ void Electron::update_pos_vel() {
   
   return;
 }
+
 
 /*
  * Draws the next timestep to use.
@@ -1003,10 +1088,13 @@ static inline bool has_recombined(const Vec& pos,
     const double cosA  = std::cos(rad);
     const double sinA  = std::sin(rad);
 
+    // Same symmetric geometry as accel_from_charge: N+1 ions for even N, N for odd
+    const int N_ions = N + (N % 2 == 0 ? 1 : 0);
+
     // Find minimum distance to any ion
     double min_d2 = std::numeric_limits<double>::infinity();
-    for (int i = 0; i < N; ++i) {
-        const int iOffset = i - (N/2 - 1);
+    for (int i = 0; i < N_ions; ++i) {
+        const int iOffset = i - N_ions / 2;
         const double s    = iOffset * r_k;
         const Vec ionPos(s * cosA, 0.0, s * sinA);
 
@@ -1251,6 +1339,24 @@ void generate_plot(int volts, double elec_energy, double angle, double density, 
           const bool recombined = has_recombined(pos_now, ke_now, angle, density, batches);
 
           if (escaped || recombined) {
+            // Record the EXACT terminating kinematic state before stopping.
+            // This is the true escape/recombination frame (position, energy,
+            // etc. at the instant the condition was met). Without this the
+            // frame is lost to write_every downsampling, and the last written
+            // row is an earlier step far from the ion — which makes downstream
+            // classification ambiguous. Written in the same column format as
+            // every other row so the file stays rectangular for np.loadtxt.
+            const double t_f    = thiselec->elapsed_time();
+            const double vd_f   = (pos_now.x - starting_x) / t_f;
+            const double s_f    = thiselec->angle();
+            const double dist_f = thiselec->distancesincelastinteraction();
+
+            file << t_f * 1e9 << "," << pos_now.x * 1e6 << "," << pos_now.y * 1e6 << ","
+                 << pos_now.z * 1e6 << "," << ke_now << "," << vd_f << "," << s_f << ","
+                 << dist_f << "," << interactions << "," << total_ionizations;
+            if (track_child_ions == true) file << "," << el;
+            file << "\n";
+
             // Ends simulation abruptly
             stop_now = true;
             break;

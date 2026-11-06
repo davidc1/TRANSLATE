@@ -1,4 +1,8 @@
 .DS_Store
 build/
 py/preprocessing/.ipynb_checkpoints/
+py/simulation-runs
+py/recombination_data
+py/recombination_data_2
+py/other_recombination_data
 *~

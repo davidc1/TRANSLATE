@@ -4,6 +4,7 @@ Simulation of electron transport in LAr under varying electric fields. Code repo
 
 Basis of simulation outlined in Wojcik, M., & Tachiya, M. (2002). Electron transport and electron–ion recombination in liquid argon: Simulation based on the Cohen–Lekner theory. Chemical Physics Letters, 363(3-4), 381-388. doi:10.1016/s0009-2614(02)01177-6
 
+
 ## Citing this software
 When using this software, please cite the article which describes this work:
 
@@ -22,6 +23,10 @@ Published in: Comput.Phys.Commun. 297 (2024), 109056
 Running the executable for LArCADe will walk you through the parameters to be specified before the simulation begins. The resulting data is exported to the py/simulation-runs folder. Examples of studies carried out with the produced simulations can be found at 
 
 Gas cross-section data is from the BSR database, www.lxcat.net, retrieved on June 11, 2019 and Rejoub, R., Lindsay, B. G., & Stebbings, R. F. (2002). Determination of the absolute partial and total cross sections for electron-impact ionization of the rare gases. Physical Review A, 65(4). doi:10.1103/physreva.65.042713. Liquid cross-section data comes from the Wojcik, M., & Tachiya, M. paper mentioned at the top.
+
+### A note on new features for recombination
+The `recombination_testing` branch  is a seperate branch from the other TRANSLATE branches intended to study and apply angular-dependent recombination studies to the existing TRANSLATE framework. The current model tests for r
+
 
 ### Prerequisites
 You'll need Numpy, Scipy, and Matplotlib. Jupyter is required to view the preprocessing notebooks. CMake makes for an easy install.
